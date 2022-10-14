@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import torch.nn as nn
 import torch as T
 from torch.autograd import Variable as var
@@ -70,17 +71,114 @@ def inference(args):
     ).to(args.device)
 
     input_data, target_output = generate_data(batch_size, length, input_size, args.device)
+
+    if args.channels_last:
+        rnn = rnn.to(memory_format=torch.channels_last)
+        input_data = input_data.to(memory_format=torch.channels_last) if len(input_data.size()) == 4 else input_data
+    # disable jit, jit make slow
+    #if args.jit:
+    #    try:
+    #        rnn = torch.jit.trace(rnn, input_data, check_trace=False, strict=False)
+    #        print("---- JIT trace enable.")
+    #    except (RuntimeError, TypeError) as e:
+    #        print("---- JIT trace disable.")
+    #        print("failed to use PyTorch jit mode due to: ", e)
+    if args.nv_fuser:
+       fuser_mode = "fuser2"
+    else:
+       fuser_mode = "none"
+    print("---- fuser mode:", fuser_mode)
     
     total_time = 0.0
     total_sample = 0
-    for i in range(args.num_iter + args.num_warmup):
-        elapsed = time.time()
-        output, (chx, mhx, rv) = rnn(input_data, None)
-        elapsed = time.time() - elapsed
-        print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
-        if i >= args.num_warmup:
-            total_sample += args.batch_size
-            total_time += elapsed
+
+    if args.profile and args.device == "xpu":
+        for i in range(args.num_iter + args.num_warmup):
+            with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
+                elapsed = time.time()
+                output, (chx, mhx, rv) = rnn(input_data)
+                torch.xpu.synchronize()
+                elapsed = time.time() - elapsed
+            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+            if i >= args.num_warmup:
+                total_sample += args.batch_size
+                total_time += elapsed
+            if args.profile and i == int((args.num_iters + args.num_warmup)/2):
+                import pathlib
+                timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+                if not os.path.exists(timeline_dir):
+                    try:
+                        os.makedirs(timeline_dir)
+                    except:
+                        pass
+                torch.save(prof.key_averages().table(sort_by="self_xpu_time_total"),
+                    timeline_dir+'profile.pt')
+                torch.save(prof.key_averages(group_by_input_shape=True).table(),
+                    timeline_dir+'profile_detail.pt')
+    elif args.profile and args.device == "cuda":
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            record_shapes=True,
+            schedule=torch.profiler.schedule(
+                wait=int((args.num_iters + args.num_warmup)/2),
+                warmup=2,
+                active=1,
+            ),
+            on_trace_ready=trace_handler,
+        ) as p:
+            for i in range(args.num_iter + args.num_warmup):
+                elapsed = time.time()
+                with torch.jit.fuser(fuser_mode):
+                    output, (chx, mhx, rv) = rnn(input_data)
+                torch.cuda.synchronize()
+                elapsed = time.time() - elapsed
+                p.step()
+                print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+                if i >= args.num_warmup:
+                    total_sample += args.batch_size
+                    total_time += elapsed
+    elif args.profile and args.device == "cpu":
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU],
+            record_shapes=True,
+            schedule=torch.profiler.schedule(
+                wait=int((args.num_iters + args.num_warmup)/2),
+                warmup=2,
+                active=1,
+            ),
+            on_trace_ready=trace_handler,
+        ) as p:
+            for i in range(args.num_iter + args.num_warmup):
+                elapsed = time.time()
+                output, (chx, mhx, rv) = rnn(input_data)
+                elapsed = time.time() - elapsed
+                p.step()
+                print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+                if i >= args.num_warmup:
+                    total_sample += args.batch_size
+                    total_time += elapsed
+    elif not args.profile and args.device == "cuda":
+        for i in range(args.num_iter + args.num_warmup):
+            elapsed = time.time()
+            with torch.jit.fuser(fuser_mode):
+                output, (chx, mhx, rv) = rnn(input_data)
+            torch.cuda.synchronize()
+            elapsed = time.time() - elapsed
+            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+            if i >= args.num_warmup:
+                total_sample += args.batch_size
+                total_time += elapsed
+    else:
+        for i in range(args.num_iter + args.num_warmup):
+            elapsed = time.time()
+            output, (chx, mhx, rv) = rnn(input_data)
+            if args.device == "xpu":
+                torch.xpu.synchronize()
+            elapsed = time.time() - elapsed
+            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+            if i >= args.num_warmup:
+                total_sample += args.batch_size
+                total_time += elapsed
 
     latency = total_time / total_sample * 1000
     throughput = total_sample / total_time
@@ -97,13 +195,39 @@ def parse_args():
     parser.add_argument('--num_iter', default=200, type=int, help='test iterations')
     parser.add_argument('--num_warmup', default=20, type=int, help='test warmup')
     parser.add_argument('--device', default='cpu', type=str, help='cpu, cuda or xpu')
+    parser.add_argument('--nv_fuser', action='store_true', default=False, help='enable nv fuser')
     args = parser.parse_args()
     print(args)
     return args
 
 def main():
     args = parse_args()
-    inference(args)
+
+    if args.device == "xpu":
+        import intel_extension_for_pytorch
+    elif args.device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = False
+
+    with torch.inference_mode():
+        if args.precision == "float16" and args.device == "cuda":
+            print("---- Use autocast fp16 cuda")
+            with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):
+                inference(args)
+        elif args.precision == "float16" and args.device == "xpu":
+            print("---- Use autocast fp16 xpu")
+            with torch.xpu.amp.autocast(enabled=True, dtype=torch.float16, cache_enabled=True):
+                inference(args)
+        elif args.precision == "bfloat16" and args.device == "cpu":
+            print("---- Use autocast bf16 cpu")
+            with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                inference(args)
+        elif args.precision == "bfloat16" and args.device == "xpu":
+            print("---- Use autocast bf16 xpu")
+            with torch.xpu.amp.autocast(dtype=torch.bfloat16):
+                inference(args)
+        else:
+            print("---- no autocast")
+            inference(args)
 
 if __name__ == "__main__":
     main()

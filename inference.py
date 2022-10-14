@@ -117,7 +117,7 @@ def inference(args):
             if i >= args.num_warmup:
                 total_sample += args.batch_size
                 total_time += elapsed
-            if args.profile and i == int((args.num_iters + args.num_warmup)/2):
+            if args.profile and i == int((args.num_iter + args.num_warmup)/2):
                 import pathlib
                 timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
                 if not os.path.exists(timeline_dir):
@@ -134,7 +134,7 @@ def inference(args):
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
             record_shapes=True,
             schedule=torch.profiler.schedule(
-                wait=int((args.num_iters + args.num_warmup)/2),
+                wait=int((args.num_iter + args.num_warmup)/2),
                 warmup=2,
                 active=1,
             ),
@@ -156,7 +156,7 @@ def inference(args):
             activities=[torch.profiler.ProfilerActivity.CPU],
             record_shapes=True,
             schedule=torch.profiler.schedule(
-                wait=int((args.num_iters + args.num_warmup)/2),
+                wait=int((args.num_iter + args.num_warmup)/2),
                 warmup=2,
                 active=1,
             ),

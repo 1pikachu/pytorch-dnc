@@ -81,7 +81,8 @@ def inference(args):
         cell_size=cell_size,
         read_heads=read_heads,
         gpu_id=gpu_id,
-        debug=debug
+        debug=debug,
+        device=args.device
     ).to(args.device)
 
     input_data, target_output = generate_data(batch_size, length, input_size, args.device)

@@ -37,7 +37,8 @@ class DNC(nn.Module):
       independent_linears=False,
       share_memory=True,
       debug=False,
-      clip=20
+      clip=20,
+      device="cpu",
   ):
     super(DNC, self).__init__()
     # todo: separate weights and RNNs for the interface and output vectors
@@ -94,7 +95,8 @@ class DNC(nn.Module):
                 cell_size=self.w,
                 read_heads=self.r,
                 gpu_id=self.gpu_id,
-                independent_linears=self.independent_linears
+                independent_linears=self.independent_linears,
+                device=device
             )
         )
         setattr(self, 'rnn_layer_memory_' + str(layer), self.memories[layer])
@@ -108,7 +110,8 @@ class DNC(nn.Module):
               cell_size=self.w,
               read_heads=self.r,
               gpu_id=self.gpu_id,
-              independent_linears=self.independent_linears
+              independent_linears=self.independent_linears,
+              device=device
           )
       )
       setattr(self, 'rnn_layer_memory_shared', self.memories[0])
@@ -174,6 +177,9 @@ class DNC(nn.Module):
 
   def _layer_forward(self, input, layer, hx=(None, None), pass_through_memory=True):
     (chx, mhx) = hx
+    chx = chx.to(input.device)
+    for i in mhx:
+        mhx[i] = mhx[i].to(input.device)
 
     # pass through the controller layer
     input, chx = self.rnns[layer](input.unsqueeze(1), chx)
@@ -218,6 +224,7 @@ class DNC(nn.Module):
     # make the data time-first
 
     controller_hidden, mem_hidden, last_read = self._init_hidden(hx, batch_size, reset_experience)
+    last_read = last_read.to(input.device)
 
     # concat input with last read (or padding) vectors
     inputs = [T.cat([input[:, x, :], last_read], 1) for x in range(max_length)]

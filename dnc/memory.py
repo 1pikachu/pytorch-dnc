@@ -12,7 +12,7 @@ from .util import *
 
 class Memory(nn.Module):
 
-  def __init__(self, input_size, mem_size=512, cell_size=32, read_heads=4, gpu_id=-1, independent_linears=True):
+  def __init__(self, input_size, mem_size=512, cell_size=32, read_heads=4, gpu_id=-1, independent_linears=True, device="cpu"):
     super(Memory, self).__init__()
 
     self.mem_size = mem_size
@@ -41,7 +41,9 @@ class Memory(nn.Module):
       self.interface_size = (w * r) + (3 * w) + (5 * r) + 3
       self.interface_weights = nn.Linear(self.input_size, self.interface_size)
 
-    self.I = cuda(1 - T.eye(m).unsqueeze(0), gpu_id=self.gpu_id)  # (1 * n * n)
+    # self.I = cuda(1 - T.eye(m).unsqueeze(0), gpu_id=self.gpu_id)  # (1 * n * n)
+    self.I = 1 - T.eye(m).unsqueeze(0)  # (1 * n * n)
+    self.I = self.I.to(device)
 
   def reset(self, batch_size=1, hidden=None, erase=True):
     m = self.mem_size

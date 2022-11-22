@@ -84,6 +84,8 @@ def inference(args):
         debug=debug,
         device=args.device
     ).to(args.device)
+    datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
+    rnn = torch.xpu.optimize(model=rnn, dtype=datatype)
 
     input_data, target_output = generate_data(batch_size, length, input_size, args.device)
 
@@ -109,8 +111,10 @@ def inference(args):
 
     if args.profile and args.device == "xpu":
         for i in range(args.num_iter + args.num_warmup):
+            input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
             with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
                 elapsed = time.time()
+                input_data = input_data.to(args.device)
                 output, (chx, mhx, rv) = rnn(input_data)
                 torch.xpu.synchronize()
                 elapsed = time.time() - elapsed
@@ -142,7 +146,9 @@ def inference(args):
             on_trace_ready=trace_handler,
         ) as p:
             for i in range(args.num_iter + args.num_warmup):
+                input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
                 elapsed = time.time()
+                input_data = input_data.to(args.device)
                 with torch.jit.fuser(fuser_mode):
                     output, (chx, mhx, rv) = rnn(input_data)
                 torch.cuda.synchronize()
@@ -164,7 +170,9 @@ def inference(args):
             on_trace_ready=trace_handler,
         ) as p:
             for i in range(args.num_iter + args.num_warmup):
+                input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
                 elapsed = time.time()
+                input_data = input_data.to(args.device)
                 output, (chx, mhx, rv) = rnn(input_data)
                 elapsed = time.time() - elapsed
                 p.step()
@@ -174,7 +182,9 @@ def inference(args):
                     total_time += elapsed
     elif not args.profile and args.device == "cuda":
         for i in range(args.num_iter + args.num_warmup):
+            input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
             elapsed = time.time()
+            input_data = input_data.to(args.device)
             with torch.jit.fuser(fuser_mode):
                 output, (chx, mhx, rv) = rnn(input_data)
             torch.cuda.synchronize()
@@ -185,7 +195,9 @@ def inference(args):
                 total_time += elapsed
     else:
         for i in range(args.num_iter + args.num_warmup):
+            input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
             elapsed = time.time()
+            input_data = input_data.to(args.device)
             output, (chx, mhx, rv) = rnn(input_data)
             if args.device == "xpu":
                 torch.xpu.synchronize()
@@ -223,7 +235,7 @@ def main():
     elif args.device == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = False
 
-    with torch.inference_mode():
+    with torch.no_grad():
         if args.precision == "float16" and args.device == "cuda":
             print("---- Use autocast fp16 cuda")
             with torch.cuda.amp.autocast(enabled=True, dtype=torch.float16):

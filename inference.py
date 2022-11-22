@@ -84,6 +84,7 @@ def inference(args):
         debug=debug,
         device=args.device
     ).to(args.device)
+    rnn.eval()
     datatype = torch.float16 if args.precision == "float16" else torch.bfloat16 if args.precision == "bfloat16" else torch.float
     rnn = torch.xpu.optimize(model=rnn, dtype=datatype)
 

@@ -107,6 +107,10 @@ def inference(args):
     else:
        fuser_mode = "none"
     print("---- fuser mode:", fuser_mode)
+
+    if args.compile:
+        print("----enable compiler")
+        rnn = torch.compile(rnn, backend=args.backend, options={"freezing": True})
     
     total_time = 0.0
     total_sample = 0
@@ -228,6 +232,8 @@ def parse_args():
     parser.add_argument('--num_warmup', default=20, type=int, help='test warmup')
     parser.add_argument('--device', default='cpu', type=str, help='cpu, cuda or xpu')
     parser.add_argument('--nv_fuser', action='store_true', default=False, help='enable nv fuser')
+    parser.add_argument('--compile', action='store_true', default=False, help='compile model')
+    parser.add_argument('--backend', default="inductor", type=str, help='backend')
     args = parser.parse_args()
     print(args)
     return args

@@ -118,7 +118,9 @@ def inference(args):
     if args.profile and args.device == "xpu":
         for i in range(args.num_iter + args.num_warmup):
             input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
-            with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
+            profile_activity = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.XPU]
+            schedule = torch.profiler.schedule(wait=int((args.num_iter + args.num_warmup)/2), warmup=2, active=1)
+            with (torch.profiler.profile(activities=profile_activity, schedule=schedule)) as prof:
                 elapsed = time.time()
                 input_data = input_data.to(args.device)
                 output, (chx, mhx, rv) = rnn(input_data)
@@ -136,7 +138,7 @@ def inference(args):
                         os.makedirs(timeline_dir)
                     except:
                         pass
-                torch.save(prof.key_averages().table(sort_by="self_xpu_time_total"),
+                torch.save(prof.key_averages().table(sort_by="self_xpu_time_total".format(args.device), row_limit=100000),
                     timeline_dir+'profile.pt')
                 torch.save(prof.key_averages(group_by_input_shape=True).table(),
                     timeline_dir+'profile_detail.pt')

@@ -123,14 +123,11 @@ def inference(args):
     total_sample = 0
 
     #if args.profile and args.device == "xpu":
-    with context_func(args.profile, args.device, fuser_mode='none') as prof:
+    with context_func(args.profile, args.device, fuser_mode) as prof:
         for i in range(args.num_iter + args.num_warmup):
             input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
             elapsed = time.time()
             input_data = input_data.to(args.device)
-            if args.device == "cuda":
-                with torch.jit.fuser(fuser_mode):
-                    output, (chx, mhx, rv) = rnn(input_data)
             output, (chx, mhx, rv) = rnn(input_data)
             if args.device == "cuda":
                 torch.cuda.synchronize()

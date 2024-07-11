@@ -18,6 +18,13 @@ import functools
 
 from dnc import DNC
 
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+#print("os.path.dirname(__file__):", os.path.dirname(__file__))
+try:
+    from context_func import context_func
+except ModuleNotFoundError as e:
+    print("!!!pls check how to add context_func.py from launch_benchmark.sh")
+    sys.exit(0)
 
 def generate_data(batch_size, length, size, device="cpu"):
     input_data = np.zeros((batch_size, 2 * length + 1, size), dtype=np.float32)
@@ -115,106 +122,111 @@ def inference(args):
     total_time = 0.0
     total_sample = 0
 
-    if args.profile and args.device == "xpu":
-        for i in range(args.num_iter + args.num_warmup):
-            input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
-            with torch.autograd.profiler_legacy.profile(enabled=args.profile, use_xpu=True, record_shapes=False) as prof:
-                elapsed = time.time()
-                input_data = input_data.to(args.device)
-                output, (chx, mhx, rv) = rnn(input_data)
-                torch.xpu.synchronize()
-                elapsed = time.time() - elapsed
-            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
-            if i >= args.num_warmup:
-                total_sample += args.batch_size
-                total_time += elapsed
-            if args.profile and i == int((args.num_iter + args.num_warmup)/2):
-                import pathlib
-                timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
-                if not os.path.exists(timeline_dir):
-                    try:
-                        os.makedirs(timeline_dir)
-                    except:
-                        pass
-                torch.save(prof.key_averages().table(sort_by="self_xpu_time_total"),
-                    timeline_dir+'profile.pt')
-                torch.save(prof.key_averages(group_by_input_shape=True).table(),
-                    timeline_dir+'profile_detail.pt')
-                torch.save(prof.table(sort_by="id", row_limit=100000),
-                    timeline_dir+'profile_detail_withId.pt')
-                prof.export_chrome_trace(timeline_dir+"trace.json")    
-    elif args.profile and args.device == "cuda":
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            record_shapes=True,
-            schedule=torch.profiler.schedule(
-                wait=int((args.num_iter + args.num_warmup)/2),
-                warmup=2,
-                active=1,
-            ),
-            on_trace_ready=trace_handler,
-        ) as p:
-            for i in range(args.num_iter + args.num_warmup):
-                input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
-                elapsed = time.time()
-                input_data = input_data.to(args.device)
-                with torch.jit.fuser(fuser_mode):
-                    output, (chx, mhx, rv) = rnn(input_data)
-                torch.cuda.synchronize()
-                elapsed = time.time() - elapsed
-                p.step()
-                print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
-                if i >= args.num_warmup:
-                    total_sample += args.batch_size
-                    total_time += elapsed
-    elif args.profile and args.device == "cpu":
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU],
-            record_shapes=True,
-            schedule=torch.profiler.schedule(
-                wait=int((args.num_iter + args.num_warmup)/2),
-                warmup=2,
-                active=1,
-            ),
-            on_trace_ready=trace_handler,
-        ) as p:
-            for i in range(args.num_iter + args.num_warmup):
-                input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
-                elapsed = time.time()
-                input_data = input_data.to(args.device)
-                output, (chx, mhx, rv) = rnn(input_data)
-                elapsed = time.time() - elapsed
-                p.step()
-                print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
-                if i >= args.num_warmup:
-                    total_sample += args.batch_size
-                    total_time += elapsed
-    elif not args.profile and args.device == "cuda":
-        for i in range(args.num_iter + args.num_warmup):
-            input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
-            elapsed = time.time()
-            input_data = input_data.to(args.device)
-            with torch.jit.fuser(fuser_mode):
-                output, (chx, mhx, rv) = rnn(input_data)
-            torch.cuda.synchronize()
-            elapsed = time.time() - elapsed
-            print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
-            if i >= args.num_warmup:
-                total_sample += args.batch_size
-                total_time += elapsed
-    else:
+    #if args.profile and args.device == "xpu":
+    with context_func(args.profile, args.device, fuser_mode) as prof:
         for i in range(args.num_iter + args.num_warmup):
             input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
             elapsed = time.time()
             input_data = input_data.to(args.device)
             output, (chx, mhx, rv) = rnn(input_data)
-            if args.device == "xpu":
+            if args.device == "cuda":
+                torch.cuda.synchronize()
+            elif args.device == "xpu":
                 torch.xpu.synchronize()
             elapsed = time.time() - elapsed
+            if args.profile:
+                prof.step()
             print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
             if i >= args.num_warmup:
                 total_sample += args.batch_size
                 total_time += elapsed
+            # if args.profile and i == int((args.num_iter + args.num_warmup)/2):
+            #     import pathlib
+            #     timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+            #     if not os.path.exists(timeline_dir):
+            #         try:
+            #             os.makedirs(timeline_dir)
+            #         except:
+            #             pass
+            #     torch.save(prof.key_averages().table(sort_by="self_xpu_time_total".format(args.device), row_limit=100000),
+            #         timeline_dir+'profile.pt')
+            #     torch.save(prof.key_averages(group_by_input_shape=True).table(),
+            #         timeline_dir+'profile_detail.pt')
+            #     torch.save(prof.table(sort_by="id", row_limit=100000),
+            #         timeline_dir+'profile_detail_withId.pt')
+            #     prof.export_chrome_trace(timeline_dir+"trace.json")    
+    # elif args.profile and args.device == "cuda":
+    #     with torch.profiler.profile(
+    #         activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+    #         record_shapes=True,
+    #         schedule=torch.profiler.schedule(
+    #             wait=int((args.num_iter + args.num_warmup)/2),
+    #             warmup=2,
+    #             active=1,
+    #         ),
+    #         on_trace_ready=trace_handler,
+    #     ) as p:
+    #         for i in range(args.num_iter + args.num_warmup):
+    #             input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
+    #             elapsed = time.time()
+    #             input_data = input_data.to(args.device)
+    #             with torch.jit.fuser(fuser_mode):
+    #                 output, (chx, mhx, rv) = rnn(input_data)
+    #             torch.cuda.synchronize()
+    #             elapsed = time.time() - elapsed
+    #             p.step()
+    #             print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+    #             if i >= args.num_warmup:
+    #                 total_sample += args.batch_size
+    #                 total_time += elapsed
+    # elif args.profile and args.device == "cpu":
+    #     with torch.profiler.profile(
+    #         activities=[torch.profiler.ProfilerActivity.CPU],
+    #         record_shapes=True,
+    #         schedule=torch.profiler.schedule(
+    #             wait=int((args.num_iter + args.num_warmup)/2),
+    #             warmup=2,
+    #             active=1,
+    #         ),
+    #         on_trace_ready=trace_handler,
+    #     ) as p:
+    #         for i in range(args.num_iter + args.num_warmup):
+    #             input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
+    #             elapsed = time.time()
+    #             input_data = input_data.to(args.device)
+    #             output, (chx, mhx, rv) = rnn(input_data)
+    #             elapsed = time.time() - elapsed
+    #             p.step()
+    #             print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+    #             if i >= args.num_warmup:
+    #                 total_sample += args.batch_size
+    #                 total_time += elapsed
+    # elif not args.profile and args.device == "cuda":
+    #     for i in range(args.num_iter + args.num_warmup):
+    #         input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
+    #         elapsed = time.time()
+    #         input_data = input_data.to(args.device)
+    #         with torch.jit.fuser(fuser_mode):
+    #             output, (chx, mhx, rv) = rnn(input_data)
+    #         torch.cuda.synchronize()
+    #         elapsed = time.time() - elapsed
+    #         print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+    #         if i >= args.num_warmup:
+    #             total_sample += args.batch_size
+    #             total_time += elapsed
+    # else:
+    #     for i in range(args.num_iter + args.num_warmup):
+    #         input_data, target_output = generate_data(batch_size, length, input_size, "cpu")
+    #         elapsed = time.time()
+    #         input_data = input_data.to(args.device)
+    #         output, (chx, mhx, rv) = rnn(input_data)
+    #         if args.device == "xpu":
+    #             torch.xpu.synchronize()
+    #         elapsed = time.time() - elapsed
+    #         print("Iteration: {}, inference time: {} sec.".format(i, elapsed), flush=True)
+    #         if i >= args.num_warmup:
+    #             total_sample += args.batch_size
+    #             total_time += elapsed
 
     latency = total_time / total_sample * 1000
     throughput = total_sample / total_time

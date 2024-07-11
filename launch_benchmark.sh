@@ -8,6 +8,7 @@ function main {
     fetch_device_info
     set_environment
 
+    cp oob-common/context_func.py ./
     # requirements
     python setup.py develop
 
